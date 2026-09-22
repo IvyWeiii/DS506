@@ -9,6 +9,8 @@ execute:
   echo: true
 ---
 
+GitHub repository: [IvyWeiii/DS506](https://github.com/IvyWeiii/DS506)
+
 # Problem 1: Exploratory Analysis of Soybean Cultivars
 
 ## (a) Import the Data
