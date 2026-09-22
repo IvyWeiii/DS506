@@ -1,0 +1,569 @@
+---
+title: "STATS 506 — Homework 1"
+author: "Zixuan Wei"
+format:
+  html:
+    embed-resources: true
+    code-fold: false
+execute:
+  echo: true
+---
+
+# Problem 1: Exploratory Analysis of Soybean Cultivars
+
+## (a) Import the Data
+
+The dataset is imported as a data frame. The column names in the CSV header are retained.
+
+```{r}
+# Import the dataset using the first row as column names.
+soybean <- read.csv(
+  "data/soybean/data.csv",
+  header = TRUE,
+  stringsAsFactors = FALSE
+)
+
+# Treat season and cultivar as categorical variables.
+soybean$Season <- factor(soybean$Season)
+soybean$Cultivar <- factor(soybean$Cultivar)
+
+# Inspect the imported data.
+head(soybean)
+str(soybean)
+```
+
+## (b) Verify the Dataset Structure
+
+```{r}
+# Count observations, distinct cultivars, and seasons.
+data.frame(
+  Observations = nrow(soybean),
+  Cultivars = length(unique(soybean$Cultivar)),
+  Seasons = length(unique(soybean$Season))
+)
+
+# Display the number of observations in each season.
+season_counts <- as.data.frame(table(soybean$Season))
+names(season_counts) <- c("Season", "Observations")
+knitr::kable(season_counts)
+
+# Check the expected dataset structure.
+stopifnot(
+  nrow(soybean) == 320,
+  length(unique(soybean$Cultivar)) == 40,
+  length(unique(soybean$Season)) == 2
+)
+```
+
+The dataset contains `r nrow(soybean)` observations,
+`r length(unique(soybean$Cultivar))` distinct cultivars, and
+`r length(unique(soybean$Season))` seasons.
+The table above reports the number of observations from each season.
+
+## (c) Explore Relationships and Summaries
+
+### 1. Overall Correlation
+
+```{r}
+# Calculate the Pearson correlation between plant height and grain yield.
+overall_cor <- cor(soybean$PH, soybean$GY)
+overall_cor
+```
+
+The overall Pearson correlation between plant height (PH) and grain yield
+(GY) is `r round(overall_cor, 4)`.
+
+### 2. Correlation by Season
+
+```{r}
+# Calculate the correlation separately for each season.
+season_cor <- c(
+  cor(
+    soybean$PH[soybean$Season == "1"],
+    soybean$GY[soybean$Season == "1"]
+  ),
+  cor(
+    soybean$PH[soybean$Season == "2"],
+    soybean$GY[soybean$Season == "2"]
+  )
+)
+
+cor_table <- data.frame(
+  Season = c("1", "2"),
+  Correlation = season_cor
+)
+knitr::kable(cor_table, digits = 4)
+
+higher_season <- cor_table$Season[which.max(cor_table$Correlation)]
+```
+
+The correlations are `r round(season_cor[1], 4)` for Season 1 and
+`r round(season_cor[2], 4)` for Season 2.
+Season `r higher_season` has the higher correlation.
+
+### 3. Grain Yield at the Greatest Plant Height
+
+```{r}
+# Retain all observations tied for the greatest plant height.
+tallest <- soybean[
+  soybean$PH == max(soybean$PH),
+  c("Season", "Cultivar", "Repetition", "PH", "GY")
+]
+knitr::kable(tallest, row.names = FALSE)
+```
+
+The greatest plant height is `r max(soybean$PH)`.
+The corresponding grain yield value(s) are
+`r paste(tallest$GY, collapse = ", ")`.
+
+### 4. Seed Weight Above the Overall Average
+
+```{r}
+# Calculate the overall mean and percentage strictly above it.
+mean_mhg <- mean(soybean$MHG)
+pct_above <- 100 * mean(soybean$MHG > mean_mhg)
+
+data.frame(
+  Mean_MHG = mean_mhg,
+  Percentage_Above_Mean = pct_above
+)
+```
+
+The overall average MHG is `r round(mean_mhg, 2)`.
+Of all observations, `r round(pct_above, 2)`% have an MHG strictly greater
+than this average.
+
+### 5. Cultivar with the Highest Average Grain Yield
+
+```{r}
+# Calculate mean grain yield for each cultivar across both seasons.
+cultivar_means <- aggregate(
+  GY ~ Cultivar,
+  data = soybean,
+  FUN = mean
+)
+
+# Retain all cultivars tied for the highest mean.
+best_cultivar <- cultivar_means[
+  cultivar_means$GY == max(cultivar_means$GY),
+]
+knitr::kable(best_cultivar, digits = 2, row.names = FALSE)
+```
+
+The cultivar(s) with the highest average grain yield are
+`r paste(best_cultivar$Cultivar, collapse = ", ")`,
+with an average grain yield of `r round(max(cultivar_means$GY), 2)`.
+
+## (d) Overall and Season-Specific Averages
+
+```{r}
+# Select quantitative measurements, excluding experimental identifiers.
+quant_vars <- c("PH", "IFP", "NLP", "NGP", "NGL", "NS", "MHG", "GY")
+
+# Calculate overall means.
+overall_means <- data.frame(
+  Group = "Overall",
+  as.data.frame(lapply(soybean[quant_vars], mean)),
+  check.names = FALSE
+)
+
+# Calculate means within each season.
+season_means <- aggregate(
+  soybean[quant_vars],
+  by = list(Group = soybean$Season),
+  FUN = mean
+)
+season_means$Group <- paste("Season", season_means$Group)
+
+# Combine the overall and season-specific results.
+mean_table <- rbind(overall_means, season_means)
+knitr::kable(mean_table, digits = 2, row.names = FALSE)
+```
+
+The table reports the overall and season-specific means of the eight
+quantitative measurements. Season, cultivar, and repetition are
+experimental identifiers and are not averaged.
+
+## (e) Compare Grain Yield Between Seasons
+
+Let $\mu_1$ and $\mu_2$ denote the population mean grain yields for
+Seasons 1 and 2, respectively. The hypotheses are:
+
+- $H_0: \mu_1 = \mu_2$.
+- $H_A: \mu_1 \ne \mu_2$.
+
+I use a two-sided Welch two-sample t-test at the 5% significance level.
+This analysis assumes independent observations and does not require
+equal population variances.
+
+```{r}
+# Compare mean grain yield using Welch's two-sample t-test.
+welch_test <- t.test(
+  GY ~ Season,
+  data = soybean,
+  alternative = "two.sided",
+  var.equal = FALSE
+)
+welch_test
+
+# Calculate the observed difference: Season 1 minus Season 2.
+mean_difference <- mean(soybean$GY[soybean$Season == "1"]) -
+  mean(soybean$GY[soybean$Season == "2"])
+```
+
+The estimated mean difference (Season 1 minus Season 2) is
+`r round(mean_difference, 2)`.
+The Welch test gives a t-statistic of
+`r round(unname(welch_test$statistic), 4)` and a p-value of
+`r format.pval(welch_test$p.value, digits = 4)`.
+The 95% confidence interval for the mean difference is
+[`r round(welch_test$conf.int[1], 2)`,
+`r round(welch_test$conf.int[2], 2)`].
+
+At the 5% significance level, we
+`r if (welch_test$p.value < 0.05) "reject" else "fail to reject"`
+the null hypothesis. There is
+`r if (welch_test$p.value < 0.05) "sufficient" else "insufficient"`
+evidence that mean grain yield differs between the two seasons.
+A nonsignificant result does not establish that the population means
+are equal.
+
+For comparison, I also perform a pooled two-sample t-test, which
+additionally assumes equal population variances.
+
+```{r}
+# Repeat the comparison under the equal-variance assumption.
+pooled_test <- t.test(
+  GY ~ Season,
+  data = soybean,
+  alternative = "two.sided",
+  var.equal = TRUE
+)
+pooled_test
+```
+
+The pooled test gives a p-value of
+`r format.pval(pooled_test$p.value, digits = 4)`.
+The two tests
+`r if ((welch_test$p.value < 0.05) == (pooled_test$p.value < 0.05)) "agree" else "disagree"`
+on the decision at the 5% significance level.
+
+Both comparisons assume independent observations. Because the same
+cultivars appear in both seasons, a design-aware analysis may need
+to account for cultivar and experimental blocks.
+
+
+# Problem 2: Adult Income Dataset
+
+## (a) Import the Data
+
+I use the training file, `adult.data`, for this analysis.
+The separate test file, `adult.test`, is not included.
+
+```{r}
+# Import the headerless file and recognize question marks as missing.
+adult <- read.csv(
+  "data/adult/adult.data",
+  header = FALSE,
+  strip.white = TRUE,
+  na.strings = "?",
+  stringsAsFactors = FALSE
+)
+
+dim(adult)
+```
+
+## (b) Clean and Simplify Variable Names
+
+```{r}
+# Assign descriptive names in the documented column order.
+names(adult) <- c(
+  "age", "workclass", "fnlwgt", "education", "education_num",
+  "marital_status", "occupation", "relationship", "race", "sex",
+  "capital_gain", "capital_loss", "hours_per_week",
+  "native_country", "income"
+)
+
+head(adult)
+str(adult)
+```
+
+The variable names use lowercase letters and underscores consistently.
+The imported dataset contains `r nrow(adult)` observations and
+`r ncol(adult)` variables. Spaces following delimiters are removed,
+and question marks are treated as missing values.
+
+## (c) Examine Missing Values
+
+```{r}
+# Count missing observations for every variable before filtering.
+missing_counts <- data.frame(
+  Variable = names(adult),
+  Missing = colSums(is.na(adult))
+)
+knitr::kable(missing_counts, row.names = FALSE)
+```
+
+There are `r sum(is.na(adult$workclass))` missing values in workclass,
+`r sum(is.na(adult$occupation))` in occupation, and
+`r sum(is.na(adult$native_country))` in native country.
+The table reports the missing-value count for every variable.
+These counts may overlap because one observation can have multiple
+missing values.
+
+## (d) Restrict Weekly Working Hours
+
+```{r}
+# Keep individuals working at least 10 hours per week.
+adult_hours <- subset(adult, hours_per_week >= 10)
+
+data.frame(
+  Stage = c("Before filtering", "At least 10 hours per week"),
+  Observations = c(nrow(adult), nrow(adult_hours))
+)
+```
+
+The sample size decreases from `r nrow(adult)` to
+`r nrow(adult_hours)` after restricting the sample to individuals
+working at least 10 hours per week.
+
+## (e) Remove Missing Values in Selected Variables
+
+```{r}
+# Require observed values for all three specified variables.
+required_vars <- c("occupation", "workclass", "native_country")
+
+adult_complete <- adult_hours[
+  complete.cases(adult_hours[required_vars]),
+]
+
+data.frame(
+  Before = nrow(adult_hours),
+  Removed = nrow(adult_hours) - nrow(adult_complete),
+  After = nrow(adult_complete)
+)
+```
+
+This step removes `r nrow(adult_hours) - nrow(adult_complete)`
+observations and leaves `r nrow(adult_complete)` observations.
+The removed records lack at least one of the three variables required
+for the analysis. Restricting the sample to complete records allows
+these variables to be used consistently. However, this reduces the
+sample size and may introduce selection bias if missingness is
+systematically related to individual characteristics.
+
+## (f) Apply Age and Education Restrictions
+
+```{r}
+# Retain ages 18 through 90, inclusive, and exclude Preschool.
+adult_clean <- subset(
+  adult_complete,
+  age >= 18 & age <= 90 & education != "Preschool"
+)
+
+data.frame(
+  Before = nrow(adult_complete),
+  Removed = nrow(adult_complete) - nrow(adult_clean),
+  After = nrow(adult_clean)
+)
+```
+
+Individuals younger than 18, older than 90, or whose education is
+recorded as Preschool are excluded. Ages 18 and 90 are retained.
+This step removes `r nrow(adult_complete) - nrow(adult_clean)`
+observations.
+
+## (g) Final Sample Size
+
+```{r}
+# Summarize the sample size after each cleaning step.
+sample_flow <- data.frame(
+  Stage = c(
+    "Original training data",
+    "Working at least 10 hours per week",
+    "Complete occupation, workclass, and native country",
+    "Ages 18-90 and education other than Preschool"
+  ),
+  Observations = c(
+    nrow(adult),
+    nrow(adult_hours),
+    nrow(adult_complete),
+    nrow(adult_clean)
+  )
+)
+knitr::kable(sample_flow, row.names = FALSE)
+
+# Verify that the final sample satisfies all required conditions.
+stopifnot(
+  all(adult_clean$hours_per_week >= 10),
+  all(complete.cases(adult_clean[required_vars])),
+  all(adult_clean$age >= 18 & adult_clean$age <= 90),
+  all(adult_clean$education != "Preschool")
+)
+```
+
+The final cleaned sample contains **`r nrow(adult_clean)` observations**.
+
+
+# Problem 3: Happy Numbers
+
+## (a) Compute the Next Value
+
+```{r}
+#' Compute the next value in a happy-number sequence.
+#'
+#' @param n A single positive integer no greater than
+#'   .Machine$integer.max.
+#' @return The sum of the squared decimal digits of n.
+#' @details Invalid inputs produce an informative error.
+nextHappy <- function(n) {
+  if (!is.numeric(n) || is.complex(n) || length(n) != 1L) {
+    stop("n must be a single positive integer.")
+  }
+
+  if (is.na(n) || !is.finite(n) || n <= 0 || n != floor(n)) {
+    stop("n must be a single positive integer.")
+  }
+
+  if (n > .Machine$integer.max) {
+    stop("n must not exceed .Machine$integer.max.")
+  }
+
+  digits <- as.integer(strsplit(as.character(as.integer(n)), "")[[1]])
+  sum(digits^2)
+}
+
+# Reproduce the examples.
+nextHappy(19)
+nextHappy(82)
+```
+
+The function splits the input into decimal digits, squares each digit,
+and adds the results. For example, $19$ gives $1^2 + 9^2 = 82$,
+and $82$ gives $8^2 + 2^2 = 68$.
+The supported input range is 1 through `r .Machine$integer.max`.
+
+```{r}
+# Demonstrate informative errors without interrupting rendering.
+tryCatch(nextHappy(0), error = conditionMessage)
+tryCatch(nextHappy(2.5), error = conditionMessage)
+tryCatch(nextHappy("19"), error = conditionMessage)
+```
+
+## (b) Generate the Sequence and Detect Happiness
+
+```{r}
+#' Generate a happy-number sequence and determine whether it is happy.
+#'
+#' @param n A single positive integer in the range supported by nextHappy().
+#' @return A list containing sequence, a numeric vector, and isHappy,
+#'   a logical value indicating whether the sequence reaches 1.
+#' @details The sequence includes the starting value and ends at 1
+#'   for happy numbers. For unhappy numbers, it stops before appending
+#'   the first repeated value. Input validation is performed by nextHappy().
+happySequence <- function(n) {
+  # Validate the input using nextHappy().
+  nextHappy(n)
+
+  sequence <- n
+
+  repeat {
+    current <- sequence[length(sequence)]
+
+    if (current == 1) {
+      return(list(sequence = sequence, isHappy = TRUE))
+    }
+
+    next_value <- nextHappy(current)
+
+    if (next_value %in% sequence) {
+      return(list(sequence = sequence, isHappy = FALSE))
+    }
+
+    sequence <- c(sequence, next_value)
+  }
+}
+
+# Reproduce the examples.
+happySequence(19)
+happySequence(4)
+
+# Check the case where the starting value is already 1.
+happySequence(1)
+
+# Demonstrate input validation.
+tryCatch(happySequence(-4), error = conditionMessage)
+```
+
+Starting from 19 produces the sequence
+$19 \rightarrow 82 \rightarrow 68 \rightarrow 100 \rightarrow 1$,
+so 19 is happy.
+
+Starting from 4 produces
+$4 \rightarrow 16 \rightarrow 37 \rightarrow 58 \rightarrow 89
+\rightarrow 145 \rightarrow 42 \rightarrow 20$.
+The next value would be 4 again, so the sequence cycles and 4 is unhappy.
+The repeated value is not appended to the returned sequence.
+
+## (c) Analyze Integers from 1 Through 1000
+
+Sequence length is defined as the number of values returned by
+`happySequence()`, including the starting value and the terminal 1
+for happy numbers. For unhappy numbers, the first repeated value
+is not counted again. Both happy and unhappy starting values are
+included when finding the longest sequence.
+
+```{r}
+# Generate the sequence for every starting value.
+starting_values <- 1:1000
+results <- lapply(starting_values, happySequence)
+
+# Extract happiness indicators and sequence lengths.
+is_happy <- logical(length(starting_values))
+sequence_lengths <- integer(length(starting_values))
+
+for (i in seq_along(starting_values)) {
+  is_happy[i] <- results[[i]]$isHappy
+  sequence_lengths[i] <- length(results[[i]]$sequence)
+}
+
+# Count happy numbers and calculate their percentage.
+happy_count <- sum(is_happy)
+happy_percentage <- 100 * mean(is_happy)
+
+data.frame(
+  Happy_Count = happy_count,
+  Happy_Percentage = happy_percentage
+)
+```
+
+Among the integers from 1 through 1000, **`r happy_count` are happy**,
+representing **`r happy_percentage`%** of the integers considered.
+
+```{r}
+# Identify all starting values tied for the longest sequence.
+max_length <- max(sequence_lengths)
+longest_starts <- starting_values[sequence_lengths == max_length]
+
+longest_table <- data.frame(
+  Starting_Value = longest_starts,
+  Sequence_Length = sequence_lengths[sequence_lengths == max_length],
+  Is_Happy = is_happy[sequence_lengths == max_length]
+)
+knitr::kable(longest_table, row.names = FALSE)
+
+# Display the sequence for the smallest starting value among the ties.
+happySequence(min(longest_starts))
+```
+
+The longest sequence contains **`r max_length` values** under the
+counting convention stated above. The starting values attaining this
+length are **`r paste(longest_starts, collapse = ", ")`**.
+The output above shows the sequence for the smallest of these starting
+values, `r min(longest_starts)`.
+
+# AI Assistance Disclosure
+
+OpenAI Codex (September 22, 2026) was used during the preparation of
+this assignment. It provided R code and draft written
+responses for Problems 3, as well as guidance on Quarto debugging. I incorporated this material into the current draft and ran the code in RStudio to inspect the outputs.
