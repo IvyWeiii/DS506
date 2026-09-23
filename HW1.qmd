@@ -33,6 +33,14 @@ soybean$Cultivar <- factor(soybean$Cultivar)
 head(soybean)
 str(soybean)
 ```
+The original CSV column names are retained to match the dataset
+documentation and assignment notation. PH denotes plant height,
+MHG denotes thousand seed weight, and GY denotes grain yield.
+Season, Cultivar, and Repetition identify the experimental groups
+and replicates.
+
+Data source and variable documentation:
+[UCI Machine Learning Repository](https://archive.ics.uci.edu/dataset/913/forty+soybean+cultivars+from+subsequent+harvests).
 
 ## (b) Verify the Dataset Structure
 
