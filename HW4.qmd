@@ -1,0 +1,389 @@
+---
+title: "STATS 506 — Homework 4"
+author: "Zixuan Wei"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    code-fold: false
+execute:
+  echo: true
+  fig-width: 10
+  fig-height: 6
+  fig-dpi: 150
+---
+
+GitHub repository: [IvyWeiii/DS506](https://github.com/IvyWeiii/DS506)
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+library(tidyverse)
+library(knitr)
+library(scales)
+dir.create("data", showWarnings = FALSE)
+dir.create("figures", showWarnings = FALSE)
+```
+
+# Problem 1: New Zealand Elections
+
+The supplied `nzge` data contain voting-place results for 2002–2014. Candidate and Party votes are separate ballots. Following the [dataset documentation](https://github.com/cran/nzelect/blob/master/man/nzge.Rd), I aggregate `votes` rather than count rows. Current `dplyr` and `tidyr` functions are used throughout.
+
+```{r}
+nz_url <- "https://phuongov.github.io/stats506-f26/data_f26/nzge.rds"
+if (!file.exists("data/nzge.rds")) {
+  download.file(nz_url, "data/nzge.rds", mode = "wb")
+}
+nz <- readRDS("data/nzge.rds") %>% as_tibble()
+stopifnot(!anyNA(nz$votes), all(nz$votes >= 0))
+nz <- nz %>% mutate(informal = str_detect(party, "^Informal "))
+```
+
+## (a) Vote counts by year and type
+
+```{r}
+vote_totals <- nz %>%
+  group_by(election_year, voting_type) %>%
+  summarise(votes = sum(votes), .groups = "drop") %>%
+  arrange(desc(votes), election_year, voting_type)
+vote_totals %>%
+  mutate(votes = comma(votes)) %>%
+  kable(col.names = c("Year", "Vote type", "Votes"))
+```
+
+Totals include informal ballots recorded in the data, because this part asks for all votes regardless of party. The largest total is the **`r vote_totals$voting_type[1]` vote in `r vote_totals$election_year[1]`**, with **`r comma(vote_totals$votes[1])` votes**.
+
+## (b) Candidate vote shares in 2014
+
+```{r}
+candidate_2014 <- nz %>%
+  filter(election_year == 2014, voting_type == "Candidate", !informal) %>%
+  group_by(party) %>%
+  summarise(votes = sum(votes), .groups = "drop") %>%
+  mutate(proportion = votes / sum(votes)) %>%
+  arrange(desc(proportion), party)
+candidate_2014 %>%
+  mutate(votes = comma(votes), proportion = percent(proportion, accuracy = 0.01)) %>%
+  kable(col.names = c("Party / affiliation", "Candidate votes", "Share of valid votes"))
+informal_2014 <- nz %>%
+  filter(election_year == 2014, voting_type == "Candidate", informal) %>%
+  summarise(votes = sum(votes)) %>% pull(votes)
+stopifnot(abs(sum(candidate_2014$proportion) - 1) < 1e-12)
+```
+
+The denominator is all **valid Candidate votes**, including independent candidates. The `r comma(informal_2014)` informal Candidate votes are excluded because they are not votes for a party or candidate. **`r candidate_2014$party[1]`** has the largest share, **`r percent(candidate_2014$proportion[1], accuracy = 0.01)`**. Independents are reported as the dataset's combined affiliation category.
+
+## (c) Winners by year and vote type
+
+```{r}
+winning_parties <- nz %>%
+  filter(!informal) %>%
+  group_by(election_year, voting_type, party) %>%
+  summarise(votes = sum(votes), .groups = "drop") %>%
+  group_by(election_year, voting_type) %>%
+  slice_max(votes, n = 1, with_ties = TRUE) %>%
+  summarise(winner = paste(sort(party), collapse = "; "), .groups = "drop") %>%
+  pivot_wider(names_from = voting_type, values_from = winner) %>%
+  arrange(election_year)
+kable(winning_parties, col.names = c("Year", "Candidate winner", "Party winner"))
+```
+
+“Won” means the largest nationwide vote total within each ballot type, not the largest number of electorate seats or the party forming government. All tied leaders would be retained.
+
+# Problem 2: ATP Matches in 2019
+
+I use the assignment's [2019 ATP file](https://github.com/azhou5849/tennis-atp-sackmann-data). Results refer to records in this file rather than every tennis competition worldwide. Players are identified by player ID, and wins/losses follow the file's recorded outcomes, including any retirements or walkovers.
+
+```{r}
+atp_url <- paste0(
+  "https://raw.githubusercontent.com/azhou5849/tennis-atp-sackmann-data/",
+  "master/atp_matches_2019.csv"
+)
+if (!file.exists("data/atp_matches_2019.csv")) {
+  download.file(atp_url, "data/atp_matches_2019.csv", mode = "wb")
+}
+atp <- read_csv("data/atp_matches_2019.csv", show_col_types = FALSE)
+stopifnot(!anyNA(atp$tourney_id), !anyNA(atp$winner_id), !anyNA(atp$loser_id))
+atp %>% summarise(matches = n(), distinct_event_ids = n_distinct(tourney_id)) %>% kable()
+```
+
+## (a) Number of tournaments
+
+```{r}
+events <- atp %>% distinct(tourney_id, tourney_name, tourney_level)
+event_summary <- events %>% count(tourney_level, name = "events") %>% arrange(tourney_level)
+kable(event_summary, col.names = c("Event level code", "Distinct event IDs"))
+event_count <- n_distinct(atp$tourney_id)
+davis_count <- events %>% filter(tourney_level == "D") %>% nrow()
+```
+
+There are **`r event_count` distinct tournament/event IDs**. This includes **`r davis_count` Davis Cup IDs**, which represent individual ties rather than separate editions of the entire Davis Cup. Excluding those IDs leaves **`r event_count - davis_count` other events**. Counting unique IDs avoids merging different events that share a name.
+
+## (b) Players who won multiple tournaments
+
+```{r}
+# A championship is identified by a recorded final (round F).
+finals <- atp %>% filter(round == "F")
+stopifnot(nrow(finals) == n_distinct(finals$tourney_id))
+titles <- finals %>%
+  count(winner_id, winner_name, name = "titles") %>%
+  arrange(desc(titles), winner_name)
+multiple_winners <- titles %>% filter(titles > 1)
+top_title_winners <- titles %>% slice_max(titles, n = 1, with_ties = TRUE)
+multiple_winners %>%
+  select(Player = winner_name, Titles = titles) %>% kable()
+```
+
+Yes. **`r nrow(multiple_winners)` players** won more than one tournament with a recorded final. **`r paste(top_title_winners$winner_name, collapse = " and ")`** won the most, with **`r max(titles$titles)` titles each**. This definition does not treat wins in team-event matches as individual tournament titles; events without a recorded final are not assigned a singles champion.
+
+## (c) Aces by winners and losers
+
+```{r}
+# Compare aces within the same match; retain complete pairs only.
+ace_pairs <- atp %>%
+  filter(!is.na(w_ace), !is.na(l_ace)) %>%
+  mutate(difference = w_ace - l_ace)
+ace_summary <- ace_pairs %>%
+  summarise(
+    complete_matches = n(),
+    winner_mean = mean(w_ace), loser_mean = mean(l_ace),
+    mean_paired_difference = mean(difference),
+    median_paired_difference = median(difference),
+    winner_more_percent = 100 * mean(difference > 0),
+    equal_percent = 100 * mean(difference == 0),
+    loser_more_percent = 100 * mean(difference < 0)
+  )
+ace_summary %>%
+  pivot_longer(everything(), names_to = "Measure", values_to = "Value") %>%
+  kable(digits = 3)
+# Check whether the descriptive direction is consistent by surface.
+ace_pairs %>%
+  group_by(surface) %>%
+  summarise(matches = n(), mean_paired_difference = mean(difference), .groups = "drop") %>%
+  arrange(desc(matches)) %>% kable(digits = 3)
+```
+
+There is **descriptive evidence** that winners serve more aces: their mean is **`r round(ace_summary$winner_mean, 2)`**, compared with **`r round(ace_summary$loser_mean, 2)`** for losers, an average within-match difference of **`r round(ace_summary$mean_paired_difference, 2)` aces**. Winners have more aces in **`r round(ace_summary$winner_more_percent, 1)`%** of complete pairs; **`r round(ace_summary$equal_percent, 1)`%** are ties. The comparison excludes **`r nrow(atp) - nrow(ace_pairs)` matches** with incomplete ace counts. No hypothesis test is used. Repeated players, match length, and surface mean that this association should not be interpreted as an independent-match causal effect of aces.
+
+## (d) Highest win rate with at least five matches
+
+```{r}
+player_results <- bind_rows(
+  atp %>% transmute(player_id = winner_id, player = winner_name, win = 1L),
+  atp %>% transmute(player_id = loser_id, player = loser_name, win = 0L)
+)
+win_rates <- player_results %>%
+  group_by(player_id) %>%
+  summarise(player = first(player), matches = n(), wins = sum(win),
+            .groups = "drop") %>%
+  mutate(losses = matches - wins, win_rate = wins / matches) %>%
+  filter(matches >= 5) %>% arrange(desc(win_rate), player)
+best_rates <- win_rates %>% slice_max(win_rate, n = 1, with_ties = TRUE)
+best_rates %>%
+  mutate(win_rate = percent(win_rate, accuracy = 0.01)) %>% kable()
+stopifnot(sum(player_results$win) == nrow(atp))
+```
+
+**`r paste(best_rates$player, collapse = ", ")`** has the highest eligible win rate: **`r percent(best_rates$win_rate[1], accuracy = 0.01)`**, from **`r best_rates$wins[1]` wins in `r best_rates$matches[1]` matches**. The denominator includes both wins and losses, including team-event matches present in the file.
+
+# Problem 3: Covid Case Trajectories
+
+Data: **The New York Times, based on reports from state and local health agencies**, downloaded November 8, 2026. The snapshot runs from January 21, 2020 through March 23, 2023; it is not a current-2026 case series. Following the [NYT methodology](https://github.com/nytimes/covid-19-data/tree/master/rolling-averages), I use reported seven-day averages for trajectories and 2019 Census populations for cumulative rates. Analysis includes the **50 states**, excluding DC and territories. Reported cases are affected by testing, backlogs, and reporting changes; they are not all infections or unique people.
+
+```{r}
+covid_url <- paste0(
+  "https://raw.githubusercontent.com/nytimes/covid-19-data/",
+  "refs/heads/master/rolling-averages/us-states.csv"
+)
+pop_url <- paste0(
+  "https://www2.census.gov/programs-surveys/popest/datasets/",
+  "2010-2019/national/totals/nst-est2019-alldata.csv"
+)
+if (!file.exists("data/us-states.csv")) {
+  download.file(covid_url, "data/us-states.csv", mode = "wb")
+}
+if (!file.exists("data/nst-est2019-alldata.csv")) {
+  download.file(pop_url, "data/nst-est2019-alldata.csv", mode = "wb")
+}
+covid <- read_csv("data/us-states.csv", show_col_types = FALSE) %>%
+  filter(state %in% state.name) %>% arrange(state, date)
+population <- read_csv("data/nst-est2019-alldata.csv", show_col_types = FALSE) %>%
+  filter(NAME %in% state.name) %>%
+  transmute(state = NAME, population = POPESTIMATE2019)
+stopifnot(n_distinct(covid$state) == 50, nrow(population) == 50,
+          !anyDuplicated(covid[c("state", "date")]),
+          !anyNA(covid$cases), !anyNA(covid$cases_avg))
+# Check consecutive reporting dates after each state's first record.
+gap_check <- covid %>% group_by(state) %>%
+  summarise(max_gap = max(as.numeric(diff(date))), .groups = "drop")
+stopifnot(all(gap_check$max_gap == 1))
+
+# A shared, readable style for all three figures.
+theme_set(theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", size = 17),
+        plot.subtitle = element_text(size = 11, color = "grey30"),
+        plot.caption = element_text(size = 9, hjust = 0, color = "grey35"),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        panel.grid.minor = element_blank(),
+        legend.position = "top", legend.title = element_blank(),
+        plot.margin = margin(12, 16, 12, 12)))
+```
+
+## (a) Major and minor spikes
+
+I define a spike as a local maximum within a 57-day window of the additional 21-day centered mean of the national seven-day series. To avoid counting small wiggles, its height must be at least 10,000 daily cases and at least 15% above the minimum on **each** side within 70 days. Peaks of at least 100,000 daily cases are “major”; smaller qualifying peaks are “minor.” These are descriptive choices, not an official epidemiological classification. The first and last 70 days cannot qualify because both sides must be observed.
+
+```{r}
+national <- covid %>% group_by(date) %>%
+  summarise(cases_avg = sum(cases_avg), .groups = "drop") %>%
+  arrange(date) %>%
+  mutate(smoothed = as.numeric(stats::filter(cases_avg, rep(1 / 21, 21), sides = 2)))
+
+#' Identify prominent local peaks in an ordered numeric series.
+#' @param x A numeric series, possibly with missing values at the edges.
+#' @param height Minimum peak height.
+#' @param prominence Minimum relative drop on both sides within 70 days.
+#' @return Integer indices of qualifying peaks; excludes the first/last 70 days.
+find_peaks <- function(x, height = 10000, prominence = 0.15) {
+  which(vapply(seq_along(x), function(i) {
+    if (i <= 70 || i > length(x) - 70 || is.na(x[i])) return(FALSE)
+    local_max <- max(x[(i - 28):(i + 28)], na.rm = TRUE)
+    left_min <- min(x[(i - 70):(i - 1)], na.rm = TRUE)
+    right_min <- min(x[(i + 1):(i + 70)], na.rm = TRUE)
+    x[i] == local_max && x[i] >= height &&
+      x[i] - max(left_min, right_min) >= prominence * x[i]
+  }, logical(1)))
+}
+peaks <- national %>% slice(find_peaks(national$smoothed)) %>%
+  mutate(type = if_else(smoothed >= 100000, "Major", "Minor"),
+         number = row_number())
+plot_waves <- ggplot(national, aes(date, cases_avg)) +
+  geom_area(fill = "#DCE7EF", alpha = 0.8) +
+  geom_line(aes(y = smoothed), color = "#234E70", linewidth = 0.8, na.rm = TRUE) +
+  geom_point(data = peaks, aes(y = smoothed, color = type), size = 3) +
+  geom_text(data = peaks, aes(y = smoothed, label = number),
+            vjust = -1, size = 3.5) +
+  geom_hline(yintercept = 100000, linetype = "dashed", color = "grey55") +
+  scale_color_manual(values = c(Major = "#B94732", Minor = "#00857D")) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b\n%Y") +
+  scale_y_continuous(labels = label_number(scale = 1 / 1000, suffix = "k"),
+                     expand = expansion(mult = c(0, 0.12))) +
+  labs(title = "Eight broad waves in reported U.S. cases",
+       subtitle = "50 states, Jan 2020–Mar 2023 • four major and four minor peaks under the stated rule",
+       x = NULL, y = "Reported new cases per day",
+       caption = paste("Source: The New York Times. Shading: sum of state seven-day averages.",
+                       "\nLine: additional 21-day smoothing. Dashed line: 100,000-case classification threshold."))
+plot_waves
+peaks %>% transmute(Peak = number, Date = date, Type = type,
+                    Smoothed_daily_cases = round(smoothed)) %>% kable()
+ggsave("figures/01-national-waves.png", plot_waves, width = 10, height = 5.8, dpi = 300)
+```
+
+The rule identifies **`r sum(peaks$type == "Major")` major and `r sum(peaks$type == "Minor")` minor spikes**. The largest is in January 2022, far above the winter 2020–21 and late-summer 2021 peaks. The smaller spring 2020, summer 2020, spring 2021, and late-2022 rises remain visible. This is a count of national waves, not every state-specific outbreak; alternate smoothing and prominence choices can merge or split waves.
+
+## (b) States with the highest and lowest overall population rates
+
+“Overall rate” means the sum of reported daily new cases over the snapshot divided by the state's fixed 2019 population, expressed per 100,000 residents. I use raw daily counts for the cumulative total, retaining reporting corrections, and the NYT per-capita seven-day averages for the plotted trajectories. Missing records before a state's first reported case contribute no reported cases.
+
+```{r}
+state_rates <- covid %>% group_by(state) %>%
+  summarise(total_cases = sum(cases), .groups = "drop") %>%
+  left_join(population, by = "state") %>%
+  mutate(cases_per_100k = 100000 * total_cases / population) %>%
+  arrange(desc(cases_per_100k))
+extreme_states <- bind_rows(
+  state_rates %>% slice_max(cases_per_100k, n = 1, with_ties = TRUE) %>% mutate(extreme = "Highest"),
+  state_rates %>% slice_min(cases_per_100k, n = 1, with_ties = TRUE) %>% mutate(extreme = "Lowest")
+)
+extreme_states %>% select(extreme, state, total_cases, population, cases_per_100k) %>%
+  kable(digits = 1, col.names = c("Rank", "State", "Reported cases", "2019 population", "Cases / 100,000"))
+extreme_series <- covid %>% semi_join(extreme_states, by = "state")
+plot_extremes <- ggplot(extreme_series, aes(date, cases_avg_per_100k, color = state)) +
+  geom_line(linewidth = 0.75) +
+  scale_color_manual(values = c("Rhode Island" = "#B94732", "Maryland" = "#236B8E")) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b\n%Y") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.06))) +
+  labs(title = "Rhode Island's cumulative case rate exceeds Maryland's",
+       subtitle = "Highest versus lowest cumulative reported case rate among the 50 states",
+       x = NULL, y = "Daily cases per 100,000 residents\n(seven-day average)",
+       caption = "Source: The New York Times; 2019 Census populations. Identical axes permit direct comparison.\nReported cases reflect testing and reporting differences, not only infection risk.")
+plot_extremes
+ggsave("figures/02-state-extremes.png", plot_extremes, width = 10, height = 5.8, dpi = 300)
+# Show the timing and height of each selected state's largest daily average.
+extreme_series %>% group_by(state) %>%
+  slice_max(cases_avg_per_100k, n = 1, with_ties = FALSE) %>%
+  ungroup() %>% select(state, date, cases_avg_per_100k) %>% kable(digits = 2)
+```
+
+**`r extreme_states$state[1]`** has the highest cumulative rate (**`r comma(round(extreme_states$cases_per_100k[1]))` per 100,000**) and **`r extreme_states$state[nrow(extreme_states)]`** the lowest (**`r comma(round(extreme_states$cases_per_100k[nrow(extreme_states)]))` per 100,000**). Both have their dominant surge in early 2022. Rhode Island's peak is taller, and its elevated winter 2020–21 trajectory also contributes to the cumulative gap. The two states share broad wave timing but differ in magnitude; a low overall reported rate does not mean Maryland avoided substantial outbreaks. These totals count case episodes, not the fraction of residents ever infected.
+
+## (c) First five states with substantial reported spread
+
+I define “substantial” as a seven-day-average daily rate of **at least 10 cases per 100,000**, sustained for **seven consecutive days**. The onset date is the first day of that sustained run. This compares population-adjusted burden instead of isolated first cases and requires no formal test. It identifies early substantial **reported** spread, not the date of first infection.
+
+```{r}
+#| fig-height: 8
+#' Find the first sustained threshold crossing for each state.
+#' @param data A daily state data frame with date and cases_avg_per_100k.
+#' @param threshold Minimum daily seven-day-average cases per 100,000.
+#' @return A tibble of states and first dates of seven-day qualifying runs.
+first_substantial <- function(data, threshold = 10) {
+  data %>% arrange(state, date) %>% group_by(state) %>%
+    mutate(run_total = as.numeric(stats::filter(
+      as.numeric(cases_avg_per_100k >= threshold), rep(1, 7), sides = 1))) %>%
+    filter(run_total == 7) %>% slice_min(date, n = 1, with_ties = FALSE) %>%
+    ungroup() %>% transmute(state, onset = date - 6) %>% arrange(onset, state)
+}
+onsets <- first_substantial(covid)
+first_five <- onsets %>% slice_min(onset, n = 5, with_ties = TRUE)
+kable(first_five, col.names = c("State", "First day of sustained substantial spread"))
+early_series <- covid %>% semi_join(first_five, by = "state") %>%
+  filter(date >= as.Date("2020-03-01"), date <= as.Date("2020-04-30")) %>%
+  mutate(state = factor(state, levels = first_five$state))
+onset_points <- first_five %>% left_join(covid, by = c("state", "onset" = "date")) %>%
+  mutate(state = factor(state, levels = first_five$state))
+plot_early <- ggplot(early_series, aes(date, cases_avg_per_100k)) +
+  geom_line(color = "#236B8E", linewidth = 0.85) +
+  geom_hline(yintercept = 10, color = "#B94732", linetype = "dashed") +
+  geom_point(data = onset_points, aes(onset, cases_avg_per_100k),
+             color = "#B94732", size = 2.8) +
+  geom_text(data = onset_points, aes(onset, cases_avg_per_100k, label = format(onset, "%b %d")),
+            vjust = -1.2, hjust = 0, size = 3) +
+  facet_wrap(vars(state), ncol = 2) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %d",
+               limits = as.Date(c("2020-03-01", "2020-04-30"))) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.1))) +
+  labs(title = "Five early sustained outbreaks in spring 2020",
+       subtitle = "Threshold: 10 daily cases per 100,000 for at least seven consecutive days",
+       x = NULL, y = "Daily cases per 100,000\n(seven-day average)",
+       caption = "Source: The New York Times. Red dots mark the first day of each qualifying run.\nAll panels use the same scale; dates reflect reported spread and depend on the threshold.")
+plot_early
+ggsave("figures/03-first-five-states.png", plot_early, width = 10, height = 8, dpi = 300)
+# Describe threshold sensitivity without a formal statistical test.
+sensitivity <- map_dfr(c(1, 5, 10), function(threshold) {
+  first_substantial(covid, threshold) %>%
+    slice_min(onset, n = 5, with_ties = TRUE) %>%
+    summarise(threshold_per_100k = threshold,
+              early_states = paste(state, collapse = ", "))
+})
+kable(sensitivity, col.names = c("Threshold", "First five positions, retaining boundary ties"))
+```
+
+Under the stated rule, the first five are **`r paste(first_five$state, collapse = ", ")`**. The trajectories rise through the threshold in late March 2020 and continue upward, supporting sustained outbreaks rather than isolated cases. The order is not definitive: lower thresholds include different early states, as the sensitivity table shows. Limited testing in early 2020 also means actual transmission could have begun well before these dates.
+
+# Sources and AI Assistance
+
+- [Homework 4](https://phuongov.github.io/stats506-f26/Homework%204/hw04.html): questions and supplied dataset links.
+- [`nzge` documentation](https://github.com/cran/nzelect/blob/master/man/nzge.Rd): meanings of vote types, counts, and voting-place records.
+- [ATP data repository](https://github.com/azhou5849/tennis-atp-sackmann-data): 2019 match records, event codes, and results.
+- [The New York Times Covid-19 data and methodology](https://github.com/nytimes/covid-19-data/tree/master/rolling-averages), retrieved November 8, 2026: case series, seven-day averages, reporting limitations, and population reference year.
+- [U.S. Census Bureau, 2019 population estimates](https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/national/totals/nst-est2019-alldata.csv): fixed state populations for cumulative case rates.
+- OpenAI, [ChatGPT / Codex](https://chatgpt.com/), accessed November 8, 2026: generated substantial R code and explanatory text for Problems 3, helped select and document statistical definitions, downloaded data, created figures, and ran verification checks.
+
+# Computational Environment
+
+```{r}
+sessionInfo()
+```
